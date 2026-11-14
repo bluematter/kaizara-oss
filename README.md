@@ -2,8 +2,6 @@
 
 Kaizara is a clinic operating system for peptide, longevity and cash-pay wellness clinics. It covers patient records, SOAP charting, inventory with lot tracking, lab PDF parsing, a patient portal, messaging and tasks.
 
-![Screenshot placeholder](docs/screenshot.png)
-
 > **Warning: demo data only.** This repo ships with invented patients, a demo login and a seed script. Do not put real patient data in it until the items in "Before real patients" below are done.
 
 ## What works
