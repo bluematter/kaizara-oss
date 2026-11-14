@@ -1,0 +1,1192 @@
+// Kaizara - Peptide/Longevity Clinic OS
+// Prisma Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ==================== AUTH MODELS (NextAuth) ====================
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?
+  role          UserRole  @default(STAFF)
+
+  accounts Account[]
+  sessions Session[]
+
+  clinicId String?
+  clinic   Clinic? @relation(fields: [clinicId], references: [id])
+
+  consultations          Consultation[]
+  signedConsultations    Consultation[]       @relation("SignedConsultations")
+  coSignedConsultations  Consultation[]       @relation("CoSignedConsultations")
+  amendments             EncounterAmendment[]
+  administeredInjections PatientInjection[]
+  uploadedDocuments      PatientDocument[]
+  messages               Message[]
+  assignedTasks          Task[]               @relation("AssignedTasks")
+  createdTasks           Task[]               @relation("CreatedTasks")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+enum UserRole {
+  ADMIN
+  PROVIDER
+  STAFF
+}
+
+// ==================== CLINIC ====================
+
+model Clinic {
+  id      String  @id @default(cuid())
+  name    String
+  slug    String  @unique
+  address String?
+  phone   String?
+  email   String?
+  logo    String?
+
+  // Billing / subscription (provider-agnostic — not Stripe-locked)
+  plan              ClinicPlan @default(FREE_TRIAL)
+  trialEndsAt       DateTime?
+  billingProvider   String?
+  billingCustomerId String?    @unique
+
+  users     User[]
+  patients  Patient[]
+  inventory InventoryItem[]
+  fridges   Fridge[]
+  shipments Shipment[]
+  templates EncounterTemplate[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum ClinicPlan {
+  FREE_TRIAL
+  STARTER
+  PRO
+  CANCELED
+}
+
+// ==================== PATIENTS ====================
+
+model Patient {
+  id          String    @id @default(cuid())
+  firstName   String
+  lastName    String
+  email       String?
+  phone       String?
+  dateOfBirth DateTime?
+  address     String?
+  city        String?
+  state       String?
+  zip         String?
+
+  // Portal access
+  portalSlug    String  @unique @default(cuid())
+  portalEnabled Boolean @default(true)
+
+  // Portal authentication
+  portalPassword              String?
+  portalPasswordSetAt         DateTime?
+  portalMustChangePassword    Boolean   @default(false)
+  portalTempPasswordExpiresAt DateTime?
+  portalLastLoginAt           DateTime?
+  portalFailedLoginCount      Int       @default(0)
+  portalLockedUntil           DateTime?
+
+  clinicId String
+  clinic   Clinic @relation(fields: [clinicId], references: [id])
+
+  consultations  Consultation[]
+  shipments      Shipment[]
+  protocols      Protocol[]
+  labResults     LabResult[]
+  labPanels      LabPanel[]
+  conversations  Conversation[]
+  symptomEntries SymptomEntry[]
+  memberships    PatientMembership[]
+  vitals         ObjectiveData[]
+
+  // Clinical data for encounters sidebar
+  allergies   PatientAllergy[]
+  medications PatientMedication[]
+  diagnoses   PatientDiagnosis[]
+  supplements PatientSupplement[]
+
+  // Injection tracking (critical for peptide clinics)
+  injections PatientInjection[]
+
+  // Documents & history
+  documents     PatientDocument[]
+  familyHistory PatientFamilyHistory[]
+  socialHistory PatientSocialHistory?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clinicId, email])
+}
+
+model Protocol {
+  id          String    @id @default(cuid())
+  name        String
+  description String?   @db.Text
+  dosage      String?
+  frequency   String?
+  startDate   DateTime?
+  endDate     DateTime?
+  notes       String?   @db.Text
+  active      Boolean   @default(true)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LabPanel {
+  id          String    @id @default(cuid())
+  collectedAt DateTime
+  reportedAt  DateTime?
+  specimenId  String?
+  labProvider String    @default("Quest Diagnostics")
+  fasting     Boolean   @default(false)
+  fileUrl     String?
+  aiSummary   String?   @db.Text
+  status      LabStatus @default(PENDING)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  markers LabMarker[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LabMarker {
+  id           String       @id @default(cuid())
+  name         String
+  value        Float
+  unit         String
+  referenceMin Float?
+  referenceMax Float?
+  status       MarkerStatus @default(NORMAL)
+  category     String
+
+  labPanelId String
+  labPanel   LabPanel @relation(fields: [labPanelId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+}
+
+enum LabStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  REVIEWED
+}
+
+enum MarkerStatus {
+  NORMAL
+  LOW
+  HIGH
+  CRITICAL
+}
+
+model LabResult {
+  id       String   @id @default(cuid())
+  testName String
+  testDate DateTime
+  results  Json?
+  fileUrl  String?
+  notes    String?  @db.Text
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==================== INVENTORY ====================
+
+model InventoryItem {
+  id             String   @id @default(cuid())
+  name           String
+  sku            String
+  lotNumber      String
+  expirationDate DateTime
+  quantity       Int      @default(0)
+  minStock       Int      @default(5)
+  unitPrice      Float? // Retail price (what patient pays)
+  costPrice      Float? // Cost price (what clinic pays)
+  supplier       String?
+  category       String?  @default("Peptide")
+  storageTemp    String?  @default("Refrigerated")
+  notes          String?  @db.Text
+
+  clinicId String
+  clinic   Clinic @relation(fields: [clinicId], references: [id])
+
+  dispenseLogs  DispenseLog[]
+  shipmentItems ShipmentItem[]
+  injections    PatientInjection[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clinicId, sku, lotNumber])
+}
+
+model DispenseLog {
+  id       String  @id @default(cuid())
+  quantity Int
+  reason   String?
+
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+
+  consultationId String?
+  consultation   Consultation? @relation(fields: [consultationId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// ==================== CONSULTATIONS ====================
+
+model Consultation {
+  id          String        @id @default(cuid())
+  scheduledAt DateTime
+  status      ConsultStatus @default(SCHEDULED)
+
+  // Encounter type and mode
+  encounterType EncounterType @default(OFFICE_VISIT)
+  encounterMode EncounterMode @default(IN_PERSON)
+  chartType     ChartType     @default(BRIEF)
+
+  // AI Scribe data (legacy fields, now also stored in structured SOAP)
+  transcription  String? @db.Text
+  aiSummary      String? @db.Text
+  chiefComplaint String?
+
+  // Structured SOAP sections (JSON for flexibility)
+  subjective Json? // { chiefComplaint, hpi, ros, pmh, socialHistory, familyHistory }
+  objective  Json? // { vitals, physicalExam, measurements }
+  assessment Json? // { diagnoses: [{icd10, description, isPrimary}], clinicalImpression }
+  plan       Json? // { orders, prescriptions, followUp, patientEducation, referrals }
+
+  // Provider's manual notes (typed during consult alongside AI transcription)
+  providerNotes String? @db.Text
+
+  // Legacy text fields (for backwards compatibility)
+  assessmentText String? @map("assessment_legacy") @db.Text
+  planText       String? @map("plan_legacy") @db.Text
+
+  duration Int? // in minutes
+  facility String? // Facility/location name
+
+  // Signing workflow
+  signStatus   EncounterSignStatus @default(DRAFT)
+  signedAt     DateTime?
+  signedById   String?
+  signedBy     User?               @relation("SignedConsultations", fields: [signedById], references: [id])
+  coSignedAt   DateTime?
+  coSignedById String?
+  coSignedBy   User?               @relation("CoSignedConsultations", fields: [coSignedById], references: [id])
+
+  // Template used (if any)
+  templateId String?
+  template   EncounterTemplate? @relation(fields: [templateId], references: [id])
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  providerId String
+  provider   User   @relation(fields: [providerId], references: [id])
+
+  dispenseLogs   DispenseLog[]
+  symptomEntries SymptomEntry[]
+  serviceUsages  ServiceUsage[]
+  amendments     EncounterAmendment[]
+  injections     PatientInjection[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, scheduledAt])
+  @@index([providerId, signStatus])
+}
+
+enum ConsultStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// ==================== ENCOUNTER ENUMS ====================
+
+enum EncounterType {
+  OFFICE_VISIT
+  FOLLOW_UP
+  NEW_PATIENT
+  TELEHEALTH
+  PHONE_CONSULT
+  IV_THERAPY
+  INJECTION
+  LAB_REVIEW
+  PROCEDURE
+}
+
+enum EncounterMode {
+  IN_PERSON
+  PHONE
+  VIDEO
+}
+
+enum ChartType {
+  QUICK
+  BRIEF
+  COMPREHENSIVE
+  SOAP_TEMPLATE
+  AI_SCRIBE
+}
+
+enum EncounterSignStatus {
+  DRAFT
+  UNSIGNED
+  PENDING_COSIGN
+  SIGNED
+  AMENDED
+}
+
+// ==================== FRIDGE MONITORING ====================
+
+model Fridge {
+  id       String  @id @default(cuid())
+  name     String
+  location String?
+  deviceId String? // Bluetooth device ID
+  minTemp  Float   @default(2.0)
+  maxTemp  Float   @default(8.0)
+
+  clinicId String
+  clinic   Clinic @relation(fields: [clinicId], references: [id])
+
+  readings FridgeReading[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model FridgeReading {
+  id          String  @id @default(cuid())
+  temperature Float
+  humidity    Float?
+  battery     Float?
+  alert       Boolean @default(false)
+  alertType   String?
+
+  fridgeId String
+  fridge   Fridge @relation(fields: [fridgeId], references: [id])
+
+  recordedAt DateTime @default(now())
+}
+
+// ==================== SHIPPING ====================
+
+model Shipment {
+  id             String         @id @default(cuid())
+  status         ShipmentStatus @default(PENDING)
+  trackingNumber String?
+  carrier        String?        @default("USPS")
+
+  // Shipping address
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  zip          String
+
+  // Packing info
+  packingNotes String?   @db.Text
+  shippedAt    DateTime?
+  deliveredAt  DateTime?
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  clinicId String
+  clinic   Clinic @relation(fields: [clinicId], references: [id])
+
+  items ShipmentItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ShipmentItem {
+  id       String @id @default(cuid())
+  quantity Int
+
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+}
+
+enum ShipmentStatus {
+  PENDING
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+// ==================== SYMPTOM TRACKING ====================
+
+model SymptomType {
+  id          String  @id @default(cuid())
+  name        String // e.g., "Anxiety", "Fatigue", "Pain Level"
+  description String? @db.Text
+  category    String? // e.g., "Mental Health", "Physical", "Sleep"
+  icon        String? // lucide icon name
+  active      Boolean @default(true)
+
+  entries SymptomEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name])
+}
+
+model SymptomEntry {
+  id         String   @id @default(cuid())
+  score      Int // 0-100 scale
+  notes      String?  @db.Text
+  recordedAt DateTime @default(now())
+
+  // Can be recorded during a consultation or independently
+  consultationId String?
+  consultation   Consultation? @relation(fields: [consultationId], references: [id])
+
+  symptomTypeId String
+  symptomType   SymptomType @relation(fields: [symptomTypeId], references: [id])
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  // Whether this is subjective (patient-reported) or objective (clinician-measured)
+  source SymptomSource @default(SUBJECTIVE)
+
+  createdAt DateTime @default(now())
+}
+
+enum SymptomSource {
+  SUBJECTIVE // Patient-reported
+  OBJECTIVE // Clinician-measured
+}
+
+// ==================== OBJECTIVE DATA (VITALS) ====================
+
+model ObjectiveData {
+  id         String            @id @default(cuid())
+  type       ObjectiveDataType
+  value      Float // Primary value (weight in lbs, heart rate in bpm, systolic BP)
+  value2     Float? // Secondary value (diastolic BP)
+  unit       String // lbs, bpm, mmHg
+  measuredAt DateTime          @default(now())
+  source     DataSource        @default(MANUAL)
+  notes      String?           @db.Text
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([patientId, type])
+  @@index([patientId, measuredAt])
+}
+
+enum ObjectiveDataType {
+  WEIGHT
+  BLOOD_PRESSURE
+  HEART_RATE
+  TEMPERATURE
+  BLOOD_GLUCOSE
+  OXYGEN_SATURATION
+}
+
+enum DataSource {
+  MANUAL // Entered manually
+  APPLE_HEALTH // Synced from Apple Health
+  OURA // Synced from Oura Ring
+  DEVICE // From clinic device
+}
+
+// ==================== TASKS ====================
+
+model Task {
+  id          String       @id @default(cuid())
+  title       String
+  description String?      @db.Text
+  dueDate     DateTime?
+  priority    TaskPriority @default(MEDIUM)
+  status      TaskStatus   @default(PENDING)
+  completedAt DateTime?
+
+  // Optional patient context
+  patientId String?
+
+  // Assigned user
+  assignedToId String?
+  assignedTo   User?   @relation("AssignedTasks", fields: [assignedToId], references: [id])
+
+  // Created by user
+  createdById String
+  createdBy   User   @relation("CreatedTasks", fields: [createdById], references: [id])
+
+  clinicId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clinicId, status])
+  @@index([assignedToId, status])
+  @@index([dueDate])
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// ==================== MEMBERSHIP & SERVICES ====================
+
+model Membership {
+  id          String  @id @default(cuid())
+  name        String // e.g., "Basic", "Premium", "VIP"
+  description String? @db.Text
+  price       Float? // Monthly price
+  active      Boolean @default(true)
+
+  // Services included in this membership
+  services MembershipService[]
+
+  // Patients with this membership
+  patientMemberships PatientMembership[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Service {
+  id          String  @id @default(cuid())
+  name        String // e.g., "Monthly Labs", "Peptide Consultation", "IV Therapy"
+  description String? @db.Text
+  category    String? // e.g., "Labs", "Consultation", "Treatment"
+  unitPrice   Float? // Price if purchased individually
+  duration    Int? // Duration in minutes if applicable
+  active      Boolean @default(true)
+
+  memberships MembershipService[]
+  usages      ServiceUsage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MembershipService {
+  id String @id @default(cuid())
+
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id])
+
+  serviceId String
+  service   Service @relation(fields: [serviceId], references: [id])
+
+  // How many times this service is included per billing period
+  includedQuantity Int @default(1)
+
+  @@unique([membershipId, serviceId])
+}
+
+model PatientMembership {
+  id        String           @id @default(cuid())
+  status    MembershipStatus @default(ACTIVE)
+  startDate DateTime         @default(now())
+  endDate   DateTime?
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id])
+
+  // Track service usage
+  serviceUsages ServiceUsage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([patientId, membershipId])
+}
+
+model ServiceUsage {
+  id       String   @id @default(cuid())
+  usedAt   DateTime @default(now())
+  quantity Int      @default(1)
+  notes    String?  @db.Text
+
+  // Link to the patient's membership
+  patientMembershipId String
+  patientMembership   PatientMembership @relation(fields: [patientMembershipId], references: [id])
+
+  // Which service was used
+  serviceId String
+  service   Service @relation(fields: [serviceId], references: [id])
+
+  // Optional link to consultation if service was provided during one
+  consultationId String?
+  consultation   Consultation? @relation(fields: [consultationId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+enum MembershipStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+// ==================== MESSAGING ====================
+
+model Conversation {
+  id    String  @id @default(cuid())
+  title String?
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  messages Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Message {
+  id      String      @id @default(cuid())
+  content String      @db.Text
+  role    MessageRole
+
+  // For AI messages, store the model used
+  model String?
+
+  // For provider messages, link to user
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  // Metadata for AI context (lab data snapshot, etc.)
+  metadata Json?
+
+  createdAt DateTime @default(now())
+}
+
+enum MessageRole {
+  USER // Patient message
+  ASSISTANT // AI response
+  PROVIDER // Doctor/staff message
+  SYSTEM // System message (context injection)
+}
+
+// ==================== AUDIT LOGGING (HIPAA) ====================
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  // Who performed the action
+  userId    String? // Null for system/anonymous actions
+  userEmail String? // Denormalized for quick reference
+  userName  String? // Denormalized for quick reference
+
+  // What action was performed
+  action     AuditAction
+  resource   String // e.g., "Patient", "LabPanel", "Consultation"
+  resourceId String? // ID of the accessed resource
+
+  // Additional context
+  description String? // Human-readable description
+  metadata    Json? // Additional structured data
+
+  // Request context
+  ipAddress String?
+  userAgent String?
+
+  // Patient context (for PHI access tracking)
+  patientId String? // If action involved patient data
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([patientId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([resource, resourceId])
+}
+
+enum AuditAction {
+  // Authentication
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+
+  // Patient portal authentication
+  PORTAL_LOGIN
+  PORTAL_LOGOUT
+  PORTAL_LOGIN_FAILED
+  PORTAL_PASSWORD_SET
+  PORTAL_PASSWORD_CHANGED
+  PORTAL_ACCOUNT_LOCKED
+
+  // Data access (PHI)
+  VIEW
+  LIST
+  SEARCH
+  EXPORT
+
+  // Data modification
+  CREATE
+  UPDATE
+  DELETE
+
+  // AI/Chat
+  AI_QUERY
+  AI_RESPONSE
+
+  // Administrative
+  SETTINGS_CHANGE
+  PERMISSION_CHANGE
+
+  // Encounter-specific
+  SIGN
+  COSIGN
+  AMEND
+}
+
+// ==================== PATIENT CLINICAL DATA ====================
+
+model PatientAllergy {
+  id        String          @id @default(cuid())
+  allergen  String // e.g., "Penicillin", "Shellfish"
+  reaction  String? // e.g., "Hives", "Anaphylaxis"
+  severity  AllergySeverity @default(MODERATE)
+  status    ClinicalStatus  @default(ACTIVE)
+  onsetDate DateTime?
+  notes     String?         @db.Text
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, status])
+}
+
+model PatientMedication {
+  id         String         @id @default(cuid())
+  name       String // e.g., "Lisinopril 10mg"
+  dosage     String? // e.g., "10mg"
+  frequency  String? // e.g., "Once daily", "BID"
+  route      String? // e.g., "Oral", "Subcutaneous"
+  prescriber String? // Who prescribed it
+  startDate  DateTime?
+  endDate    DateTime?
+  status     ClinicalStatus @default(ACTIVE)
+  notes      String?        @db.Text
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, status])
+}
+
+model PatientDiagnosis {
+  id           String         @id @default(cuid())
+  icd10Code    String? // e.g., "E11.9"
+  description  String // e.g., "Type 2 diabetes mellitus without complications"
+  status       ClinicalStatus @default(ACTIVE)
+  isPrimary    Boolean        @default(false)
+  onsetDate    DateTime?
+  resolvedDate DateTime?
+  notes        String?        @db.Text
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, status])
+}
+
+model PatientSupplement {
+  id        String         @id @default(cuid())
+  name      String // e.g., "Vitamin D3"
+  dosage    String? // e.g., "5000 IU"
+  frequency String? // e.g., "Once daily"
+  brand     String? // e.g., "Thorne"
+  status    ClinicalStatus @default(ACTIVE)
+  startDate DateTime?
+  notes     String?        @db.Text
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, status])
+}
+
+enum AllergySeverity {
+  MILD
+  MODERATE
+  SEVERE
+  LIFE_THREATENING
+}
+
+enum ClinicalStatus {
+  ACTIVE
+  INACTIVE
+  RESOLVED
+  HISTORICAL
+}
+
+// ==================== ENCOUNTER TEMPLATES ====================
+
+model EncounterTemplate {
+  id            String         @id @default(cuid())
+  name          String // e.g., "Quick Note", "Comprehensive Visit"
+  description   String?        @db.Text
+  encounterType EncounterType?
+  chartType     ChartType      @default(BRIEF)
+
+  // Pre-filled SOAP content
+  subjective Json? // Default subjective section content
+  objective  Json? // Default objective section content
+  assessment Json? // Default assessment section content
+  plan       Json? // Default plan section content
+
+  // Text expansion macros: { ".np": "Normal physical exam...", ".ros": "Review of systems..." }
+  macros Json?
+
+  isDefault Boolean @default(false) // System template
+  isActive  Boolean @default(true)
+
+  clinicId String?
+  clinic   Clinic? @relation(fields: [clinicId], references: [id])
+
+  consultations Consultation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clinicId, isActive])
+}
+
+// ==================== ENCOUNTER AMENDMENTS (HIPAA) ====================
+
+model EncounterAmendment {
+  id      String @id @default(cuid())
+  reason  String @db.Text // Why the amendment was made
+  changes Json // { field: "plan", before: "...", after: "..." }
+
+  encounterId String
+  encounter   Consultation @relation(fields: [encounterId], references: [id])
+
+  amendedById String
+  amendedBy   User   @relation(fields: [amendedById], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([encounterId])
+}
+
+// ==================== INJECTIONS (Critical for Peptide Clinics) ====================
+
+model PatientInjection {
+  id String @id @default(cuid())
+
+  // What was injected
+  medication    String // e.g., "BPC-157", "Semaglutide", "B12"
+  dose          String // e.g., "250mcg", "0.5mg"
+  unit          String? // e.g., "mcg", "mg", "mL"
+  concentration String? // e.g., "5mg/mL"
+
+  // Administration details
+  route InjectionRoute @default(SUBCUTANEOUS)
+  site  String? // e.g., "Left abdomen", "Right deltoid"
+
+  // Lot tracking (compliance critical)
+  lotNumber      String?
+  expirationDate DateTime?
+  manufacturer   String? // Compounding pharmacy
+
+  // Who and when
+  administeredAt   DateTime @default(now())
+  administeredById String
+  administeredBy   User     @relation(fields: [administeredById], references: [id])
+
+  // Clinical notes
+  patientResponse String? @db.Text // Any immediate reactions
+  notes           String? @db.Text
+
+  // Link to encounter (if done during visit)
+  encounterId String?
+  encounter   Consultation? @relation(fields: [encounterId], references: [id])
+
+  // Link to inventory item (for auto-deduct)
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id])
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([patientId, administeredAt])
+  @@index([lotNumber])
+}
+
+enum InjectionRoute {
+  SUBCUTANEOUS // SubQ - most peptides
+  INTRAMUSCULAR // IM
+  INTRAVENOUS // IV
+  INTRADERMAL // ID
+}
+
+// ==================== PATIENT DOCUMENTS ====================
+
+model PatientDocument {
+  id       String       @id @default(cuid())
+  title    String // e.g., "Lab Results - Quest 01/15/2024"
+  type     DocumentType @default(OTHER)
+  fileUrl  String // S3/storage URL
+  fileName String? // Original filename
+  fileSize Int? // Bytes
+  mimeType String? // e.g., "application/pdf"
+
+  description String? @db.Text
+
+  // Who uploaded
+  uploadedById String?
+  uploadedBy   User?   @relation(fields: [uploadedById], references: [id])
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, type])
+}
+
+enum DocumentType {
+  LAB_RESULT
+  IMAGING
+  CONSENT_FORM
+  INTAKE_FORM
+  REFERRAL
+  PRESCRIPTION
+  INSURANCE
+  ID_DOCUMENT
+  CLINICAL_NOTE
+  OTHER
+}
+
+// ==================== FAMILY HISTORY ====================
+
+model PatientFamilyHistory {
+  id           String             @id @default(cuid())
+  relationship FamilyRelationship
+  condition    String // e.g., "Type 2 Diabetes", "Heart Disease"
+  ageOfOnset   Int? // Age when condition started
+  deceased     Boolean            @default(false)
+  ageAtDeath   Int?
+  causeOfDeath String?
+  notes        String?            @db.Text
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId])
+}
+
+enum FamilyRelationship {
+  MOTHER
+  FATHER
+  SISTER
+  BROTHER
+  MATERNAL_GRANDMOTHER
+  MATERNAL_GRANDFATHER
+  PATERNAL_GRANDMOTHER
+  PATERNAL_GRANDFATHER
+  AUNT
+  UNCLE
+  CHILD
+  OTHER
+}
+
+// ==================== SOCIAL HISTORY ====================
+
+model PatientSocialHistory {
+  id String @id @default(cuid())
+
+  // Substance use
+  smokingStatus  SmokingStatus @default(NEVER)
+  smokingDetails String? // e.g., "1 pack/day for 10 years, quit 2020"
+  alcoholUse     AlcoholUse    @default(NONE)
+  alcoholDetails String? // e.g., "2-3 drinks/week socially"
+  substanceUse   String?       @db.Text // Other substances
+
+  // Lifestyle
+  exerciseLevel   ExerciseLevel @default(MODERATE)
+  exerciseDetails String? // e.g., "Runs 3x/week, lifts 2x/week"
+  dietType        String? // e.g., "Mediterranean", "Keto", "Vegan"
+  dietDetails     String?       @db.Text
+  sleepHours      Float? // Average hours per night
+  sleepQuality    String? // e.g., "Poor - wakes 2-3x/night"
+  stressLevel     StressLevel   @default(MODERATE)
+
+  // Occupation & environment
+  occupation          String?
+  employer            String?
+  occupationalHazards String? @db.Text // e.g., "Chemical exposure"
+
+  // Living situation
+  maritalStatus   MaritalStatus?
+  livingSituation String? // e.g., "Lives alone", "With spouse and 2 children"
+
+  // Other
+  notes String? @db.Text
+
+  patientId String  @unique // One social history per patient
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum SmokingStatus {
+  NEVER
+  FORMER
+  CURRENT
+  UNKNOWN
+}
+
+enum AlcoholUse {
+  NONE
+  OCCASIONAL // < 1 drink/week
+  MODERATE // 1-7 drinks/week
+  HEAVY // > 7 drinks/week
+  UNKNOWN
+}
+
+enum ExerciseLevel {
+  SEDENTARY
+  LIGHT // 1-2 days/week
+  MODERATE // 3-4 days/week
+  ACTIVE // 5+ days/week
+  ATHLETE
+}
+
+enum StressLevel {
+  LOW
+  MODERATE
+  HIGH
+  SEVERE
+}
+
+enum MaritalStatus {
+  SINGLE
+  MARRIED
+  DIVORCED
+  WIDOWED
+  SEPARATED
+  DOMESTIC_PARTNER
+}
